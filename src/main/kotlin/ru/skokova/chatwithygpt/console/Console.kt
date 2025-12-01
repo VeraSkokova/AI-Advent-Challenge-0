@@ -42,9 +42,7 @@ class ConsoleApp(private val configPath: String = "local.properties") {
         while (true) {
             print("You: ")
             val charset = Charset.defaultCharset()
-            logger.success("Default charset: $charset")
             val input = readlnOrNull()?.trim()?.let { String(it.toByteArray(charset), Charsets.UTF_8) } ?: continue
-            logger.success("input = $input")
 
             when (input.lowercase()) {
                 "exit" -> {
