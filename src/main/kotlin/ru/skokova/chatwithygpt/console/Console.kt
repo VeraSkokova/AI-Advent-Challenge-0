@@ -1,9 +1,11 @@
 package ru.skokova.chatwithygpt.console
 
 import jdk.internal.org.jline.reader.LineReader
+import kotlinx.serialization.json.Json
 import ru.skokova.chatwithygpt.client.YandexGptClient
 import ru.skokova.chatwithygpt.config.ApiConfig
 import ru.skokova.chatwithygpt.models.Message
+import ru.skokova.chatwithygpt.models.StructuredResponse
 import ru.skokova.chatwithygpt.utils.Logger
 import java.io.BufferedReader
 import java.io.BufferedWriter
@@ -46,8 +48,13 @@ class ConsoleApp(private val configPath: String = "local.properties") {
     private suspend fun chatPhase() {
         System.setOut(PrintStream(System.out, true, StandardCharsets.UTF_8))
         logger.println("💬 Chat (type 'exit' to quit, 'clear' to clear history)", Logger.Color.CYAN)
+        logger.println("This chat takes your input and retrieves its subject, idea and goal")
         logger.println()
 
+        val jsonToParse = Json {
+            ignoreUnknownKeys = true
+            isLenient = true
+        }
         val reader = BufferedReader(InputStreamReader(System.`in`, Charsets.UTF_8))
         try {
             while (true) {
@@ -71,7 +78,6 @@ class ConsoleApp(private val configPath: String = "local.properties") {
                 }
 
                 if (input.isEmpty()) continue
-                logger.println("input = $input")
 
                 conversationHistory.add(Message("user", input))
 
@@ -81,6 +87,12 @@ class ConsoleApp(private val configPath: String = "local.properties") {
                 result.onSuccess { (response, tokens) ->
                     println(response)
                     conversationHistory.add(Message("assistant", response))
+                    try {
+                        jsonToParse.decodeFromString<StructuredResponse>(response)
+                        logger.success("Response parsed")
+                    } catch (e: Exception) {
+                        logger.error("Bad response")
+                    }
                     totalTokens += tokens
                     logger.println(
                         "[Tokens: $tokens | Total: $totalTokens]",

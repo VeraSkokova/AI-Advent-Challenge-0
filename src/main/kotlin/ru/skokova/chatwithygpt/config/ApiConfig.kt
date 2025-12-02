@@ -25,7 +25,7 @@ data class ApiConfig(
 ДЛЯ АНГЛИЙСКОГО ТЕКСТА:
 {
   "subject": "<main theme>",
-  "idea": "entral idea>",
+  "idea": "<central idea>",
   "goal": "<author's purpose>"
 }
 
