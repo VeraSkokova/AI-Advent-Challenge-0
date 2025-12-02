@@ -19,5 +19,6 @@ data class CompletionOptions(
 data class GptRequest(
     val modelUri: String,
     val completionOptions: CompletionOptions,
-    val messages: List<Message>
+    val messages: List<Message>,
+    val jsonObject: Boolean = false
 )
