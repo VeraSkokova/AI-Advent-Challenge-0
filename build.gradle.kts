@@ -23,6 +23,7 @@ dependencies {
 
     // Логирование Ktor (опционально)
     implementation("io.ktor:ktor-client-logging:2.3.7")
+    implementation("org.slf4j:slf4j-simple:2.0.9")
 
     // Тестирование
     testImplementation("junit:junit:4.13.2")
