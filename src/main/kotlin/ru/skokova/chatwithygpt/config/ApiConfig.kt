@@ -5,65 +5,35 @@ import java.io.FileInputStream
 import java.util.Properties
 
 data class ApiConfig(
-    var apiKey: String = "",
-    var folderId: String = "",
-    var modelVersion: String = "latest",
-    var systemPrompt: String = """
-Ты — опытный учитель литературы, специализирующийся на анализе текстов. Твоя задача — разобрать каждое сообщение пользователя как литературное произведение или фрагмент, разбираемый на уроке литературы.
-
-КРИТИЧНО: Определи язык входящего сообщения. Если сообщение на русском — отвечай на русском. Если на английском — отвечай на английском. Если на другом языке — отвечай на этом языке.
-
-Для каждого сообщения ты должен выдать ответ ТОЛЬКО в формате JSON. Язык в JSON должен совпадать с языком входящего сообщения:
-
-ДЛЯ РУССКОГО ТЕКСТА:
-{
-  "subject": "<основная тема>",
-  "idea": "<центральная идея>",
-  "goal": "<цель автора>"
-}
-
-ДЛЯ АНГЛИЙСКОГО ТЕКСТА:
-{
-  "subject": "<main theme>",
-  "idea": "<central idea>",
-  "goal": "<author's purpose>"
-}
-
-Правила:
-1. Subject — ключевое понятие или объект текста
-2. Idea — суть мысли автора, философское или эмоциональное утверждение
-3. Goal — цель высказывания
-
-Выдавай ТОЛЬКО JSON в том языке, на котором написано сообщение. Без предисловий. Без объяснений.
-""".trimIndent(),
-    var temperature: Double = 0.6,
-    var maxTokens: Int = 1000,
-    val fileName: String = "local.properties"
+    val apiKey: String,
+    val folderId: String,
+    val modelVersion: String
 ) {
-    fun isConfigured(): Boolean = apiKey.isNotEmpty() && folderId.isNotEmpty()
-
-    fun loadFromLocalProperties() {
-        val props = Properties()
-        val resourceStream = this::class.java.classLoader.getResourceAsStream(fileName)
-        if (resourceStream != null) {
-            props.load(resourceStream)
-            resourceStream.close()
-        } else {
-            // Если нет в JAR, ищем в текущей директории
+    companion object {
+        fun load(fileName: String = "local.properties"): ApiConfig {
+            val props = Properties()
             val file = File(fileName)
-            if (!file.exists()) {
-                throw IllegalStateException(
-                    "Config file $fileName not found in classpath or project root.\n" +
-                            "Usage: java -jar app.jar [config-path]\n" +
-                            "Example: java -jar app.jar /path/to/local.properties"
-                )
-            }
-            FileInputStream(file).use { fis ->
-                props.load(fis)
-            }
-        }
 
-        apiKey = props.getProperty("YANDEX_GPT_API_KEY")?.trim().orEmpty()
-        folderId = props.getProperty("YANDEX_GPT_FOLDER_ID")?.trim().orEmpty()
+            // 1. Читаем файл, если есть
+            if (file.exists()) {
+                FileInputStream(file).use { props.load(it) }
+            }
+
+            // 2. Достаем значения (Сначала Env Vars, потом файл)
+            // Это Best Practice для облачных приложений
+            val apiKey = System.getenv("YANDEX_GPT_API_KEY")
+                ?: props.getProperty("YANDEX_GPT_API_KEY")?.trim()
+                ?: throw IllegalStateException("API Key not found! Set YANDEX_GPT_API_KEY env var or in $fileName")
+
+            val folderId = System.getenv("YANDEX_GPT_FOLDER_ID")
+                ?: props.getProperty("YANDEX_GPT_FOLDER_ID")?.trim()
+                ?: throw IllegalStateException("Folder ID not found! Set YANDEX_GPT_FOLDER_ID env var or in $fileName")
+
+            val version = System.getenv("YANDEX_GPT_MODEL_VERSION")
+                ?: props.getProperty("YANDEX_GPT_MODEL_VERSION")
+                ?: "latest"
+
+            return ApiConfig(apiKey, folderId, version)
+        }
     }
 }
