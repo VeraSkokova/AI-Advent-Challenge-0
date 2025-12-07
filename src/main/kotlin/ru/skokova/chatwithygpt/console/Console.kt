@@ -1,13 +1,20 @@
 package ru.skokova.chatwithygpt.console
 
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import ru.skokova.chatwithygpt.client.YandexGptClient
 import ru.skokova.chatwithygpt.config.ApiConfig
+import ru.skokova.chatwithygpt.config.RoleConfig
+import ru.skokova.chatwithygpt.data.KindMentor
+import ru.skokova.chatwithygpt.data.Persona
 import ru.skokova.chatwithygpt.data.Personas
+import ru.skokova.chatwithygpt.data.StrictAuditor
 import ru.skokova.chatwithygpt.models.Message
-import ru.skokova.chatwithygpt.presentation.printPretty
 import ru.skokova.chatwithygpt.utils.Logger
 import java.io.BufferedReader
 import java.io.InputStreamReader
@@ -15,14 +22,20 @@ import java.io.PrintStream
 import java.nio.charset.StandardCharsets
 
 class ConsoleApp(private val configPath: String = "local.properties") {
+
+    private val config = ApiConfig.load(configPath)
+    private val roleConfig = RoleConfig.load()
     private val logger = Logger()
     private lateinit var client: YandexGptClient
+
+    private var currentPersona: Persona = Personas.LiteratureTeacher
     private val conversationHistory = mutableListOf<Message>()
     private var totalTokens = 0
 
     suspend fun run() {
         logger.banner()
         setupPhase()
+        roleSelectionPhase()
         chatPhase()
     }
 
@@ -30,22 +43,83 @@ class ConsoleApp(private val configPath: String = "local.properties") {
         logger.println("⚙️  API Configuration", Logger.Color.CYAN)
         logger.println()
 
-        val apiConfig = try {
-            ApiConfig.load(configPath)
+        try {
+            if (!config.isConfigured()) {
+                logger.error("API Key and Folder ID are required!")
+                return
+            }
+            client = YandexGptClient(config)
+            logger.success("✓ Configuration loaded successfully")
         } catch (e: Exception) {
-            logger.error(e.message ?: "Config error")
+            logger.error("Configuration error: ${e.message}")
             return
         }
-        client = YandexGptClient(apiConfig)
-
-        logger.success("✓ Configuration saved. Ready to chat!")
         logger.println()
+    }
+
+    // --- НОВАЯ ФУНКЦИЯ: ВЫБОР РОЛИ ---
+    private fun roleSelectionPhase() {
+        logger.println("🎭 Role Selection", Logger.Color.CYAN)
+        logger.println()
+
+        // Приоритет 1: Если роль задана в конфиге
+        if (!roleConfig.roleId.isNullOrBlank()) {
+            val selectedPersona = findPersonaById(roleConfig.roleId!!)
+            if (selectedPersona != null) {
+                currentPersona = selectedPersona
+                logger.success("✓ Role loaded from config: ${currentPersona.id}")
+                logger.println()
+                return
+            } else {
+                logger.error("Role '${roleConfig.roleId}' not found in config. Showing menu.")
+                logger.println()
+            }
+        }
+
+        // Приоритет 2: Показываем меню
+        val availablePersonas = listOf(
+            Personas.LiteratureTeacher,
+            Personas.SystemAnalyst,
+            Personas.MobileArchitect,
+            KindMentor,
+            StrictAuditor
+        )
+
+        logger.println("Choose a role:")
+        availablePersonas.forEachIndexed { idx, persona ->
+            println("  ${idx + 1}. ${persona.id}")
+        }
+        logger.println()
+
+        print("Enter role number (1-${availablePersonas.size}): ")
+
+        val reader = BufferedReader(InputStreamReader(System.`in`, StandardCharsets.UTF_8))
+        val input = reader.readLine()?.trim()?.toIntOrNull() ?: 1
+
+        if (input in 1..availablePersonas.size) {
+            currentPersona = availablePersonas[input - 1]
+            logger.success("✓ Selected role: ${currentPersona.id}")
+        } else {
+            logger.error("Invalid choice. Using default: LiteratureTeacher")
+            currentPersona = Personas.LiteratureTeacher
+        }
+        logger.println()
+    }
+
+    // --- ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ: ПОИСК ПЕРСОНЫ ПО ID ---
+    private fun findPersonaById(id: String): Persona? {
+        return listOf(
+            Personas.LiteratureTeacher,
+            Personas.SystemAnalyst,
+            Personas.MobileArchitect,
+            KindMentor,
+            StrictAuditor
+        ).find { it.id == id }
     }
 
     private suspend fun chatPhase() {
         System.setOut(PrintStream(System.out, true, StandardCharsets.UTF_8))
-        logger.println("💬 Chat (type 'exit' to quit, 'clear' to clear history)", Logger.Color.CYAN)
-        //logger.println("This chat takes your input and retrieves its subject, idea and goal")
+        logger.println("💬 Chat (type 'exit' to quit, 'clear' to clear history, 'switch' to change role)", Logger.Color.CYAN)
         logger.println()
 
         val jsonToParse = Json {
@@ -53,32 +127,17 @@ class ConsoleApp(private val configPath: String = "local.properties") {
             isLenient = true
         }
 
-        val currentPersona = Personas.MobileArchitect // Легко меняется на другую
-
-        // --- УСЛОВНАЯ ПРОАКТИВНАЯ ИНИЦИАЛИЗАЦИЯ ---
+        // --- ПРОАКТИВНЫЙ СТАРТ (если персона требует) ---
         if (currentPersona.requiresProactiveStart) {
             print("Assistant: ")
-
             val initialRequest = listOf(Message("user", "START"))
-            val greetingResult = client.sendMessage(
-                messagesHistory = initialRequest,
-                persona = currentPersona
-            )
+            val greetingResult = client.sendMessage(initialRequest, currentPersona)
 
             greetingResult.onSuccess { (response, _) ->
                 val jsonElement = jsonToParse.parseToJsonElement(response).jsonObject
-
                 if (jsonElement["type"]?.jsonPrimitive?.content == "question") {
-                    val text = jsonElement["text"]?.jsonPrimitive?.content ?: ""
-                    val tip = jsonElement["tip"]?.jsonPrimitive?.content // Читаем совет
-
-                    println("🤖 $text")
-
-                    // Если есть совет, выводим его красивым цветом
-                    if (!tip.isNullOrBlank()) {
-                        logger.println("💡 TIP: $tip", Logger.Color.YELLOW)
-                    }
-
+                    val text = jsonElement["text"]?.jsonPrimitive?.content ?: "..."
+                    println(text)
                     conversationHistory.add(Message("assistant", response))
                 }
             }.onFailure { error ->
@@ -86,9 +145,8 @@ class ConsoleApp(private val configPath: String = "local.properties") {
             }
             logger.println()
         }
-        // ------------------------------------------
 
-        val reader = BufferedReader(InputStreamReader(System.`in`, Charsets.UTF_8))
+        val reader = BufferedReader(InputStreamReader(System.`in`, StandardCharsets.UTF_8))
         try {
             while (true) {
                 print("You: ")
@@ -109,40 +167,50 @@ class ConsoleApp(private val configPath: String = "local.properties") {
                         continue
                     }
 
+                    "switch" -> {
+                        // Логика переключения ролей
+                        val allPersonas = listOf(
+                            Personas.LiteratureTeacher,
+                            Personas.SystemAnalyst,
+                            Personas.MobileArchitect,
+                            KindMentor,
+                            StrictAuditor
+                        )
+                        val currentIdx = allPersonas.indexOfFirst { it.id == currentPersona.id }
+                        val nextIdx = (currentIdx + 1) % allPersonas.size
+                        currentPersona = allPersonas[nextIdx]
+
+                        logger.println("🔄 Switched to: ${currentPersona.id} ", Logger.Color.YELLOW)
+                        logger.println("History preserved. Context retained.", Logger.Color.GRAY)
+                        continue
+                    }
+
                     else -> {}
                 }
 
                 if (input.isEmpty()) continue
 
                 conversationHistory.add(Message("user", input))
-
                 print("Assistant: ")
 
                 val result = client.sendMessage(conversationHistory, currentPersona)
 
                 result.onSuccess { (response, tokens) ->
-
-                    // Добавляем ответ в историю, чтобы контекст сохранялся (это важно!)
                     conversationHistory.add(Message("assistant", response))
 
                     try {
-                        // Парсим JSON. Используем parseToJsonElement для гибкости
                         val jsonElement = jsonToParse.parseToJsonElement(response).jsonObject
 
-                        // Определяем тип сообщения и выводим красиво
                         val type = jsonElement["type"]?.jsonPrimitive?.content
 
                         when (type) {
                             "question" -> {
-                                // --- РЕЖИМ ВОПРОСА ---
                                 val text = jsonElement["text"]?.jsonPrimitive?.content ?: "..."
                                 val tip = jsonElement["tip"]?.jsonPrimitive?.content
 
-                                // Печатаем основной текст вопроса (Желтым, как диалог)
                                 logger.println("\n🤖 Assistant:", Logger.Color.CYAN)
                                 println(text)
 
-                                // Если есть совет (Tip), выводим его отдельно (Серым курсивом или другим цветом)
                                 if (!tip.isNullOrBlank()) {
                                     logger.println("\n💡 Tip: $tip", Logger.Color.YELLOW)
                                 }
@@ -159,8 +227,6 @@ class ConsoleApp(private val configPath: String = "local.properties") {
                                     if (key !in ignoredKeys) {
                                         val sectionTitle = key.replace("_", " ").uppercase()
                                         logger.println("\n🔹 $sectionTitle", Logger.Color.CYAN)
-
-                                        // Вызов нашей новой функции-расширения
                                         element.printPretty(indent = "   ")
                                     }
                                 }
@@ -168,7 +234,6 @@ class ConsoleApp(private val configPath: String = "local.properties") {
                                 logger.println("\n────────────────────────────────────────", Logger.Color.GRAY)
                             }
 
-                            // --- Fallback (если пришел не наш JSON или другой формат) ---
                             else -> {
                                 val text = jsonElement["text"]?.jsonPrimitive?.content
                                     ?: jsonElement["content"]?.jsonPrimitive?.content
@@ -176,20 +241,18 @@ class ConsoleApp(private val configPath: String = "local.properties") {
                                 if (text != null) {
                                     println(text)
                                 } else {
-                                    // Если совсем непонятно что - печатаем как есть, но аккуратно
                                     println(response)
                                 }
                             }
                         }
 
                     } catch (_: Exception) {
-                        // Если пришел не JSON (ошибка модели), печатаем сырой текст
                         logger.error("Raw response (parsing failed):")
                         println(response)
                     }
 
                     totalTokens += tokens
-                    // logger.println("[Tokens: $tokens]", Logger.Color.GRAY)
+                    logger.println("[Tokens: $tokens | Total: $totalTokens]", Logger.Color.GRAY)
 
                 }.onFailure { error ->
                     logger.error("Error: ${error.message}")
@@ -199,6 +262,41 @@ class ConsoleApp(private val configPath: String = "local.properties") {
             }
         } finally {
             reader.close()
+        }
+    }
+}
+
+// Функция-расширение для красивой печати JSON
+fun JsonElement.printPretty(indent: String = "   ") {
+    when (this) {
+        is JsonObject -> {
+            this.entries.forEach { (key, value) ->
+                val prettyKey = key.replace("_", " ")
+                    .replaceFirstChar { if (it.isLowerCase()) it.titlecase() else it.toString() }
+
+                print("$indent• $prettyKey: ")
+
+                if (value is JsonPrimitive) {
+                    println(value.content)
+                } else {
+                    println()
+                    value.printPretty(indent + "  ")
+                }
+            }
+        }
+        is JsonArray -> {
+            this.forEach { item ->
+                print("$indent- ")
+                if (item is JsonPrimitive) {
+                    println(item.content)
+                } else {
+                    println()
+                    item.printPretty(indent + "  ")
+                }
+            }
+        }
+        is JsonPrimitive -> {
+            println(this.content)
         }
     }
 }

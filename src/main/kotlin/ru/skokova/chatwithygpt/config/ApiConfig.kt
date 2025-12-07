@@ -9,6 +9,8 @@ data class ApiConfig(
     val folderId: String,
     val modelVersion: String
 ) {
+    fun isConfigured(): Boolean = apiKey.isNotEmpty() && folderId.isNotEmpty()
+
     companion object {
         fun load(fileName: String = "local.properties"): ApiConfig {
             val props = Properties()
