@@ -82,7 +82,8 @@ class ConsoleApp(private val configPath: String = "local.properties") {
             Personas.SystemAnalyst,
             Personas.MobileArchitect,
             KindMentor,
-            StrictAuditor
+            StrictAuditor,
+            Personas.ExperimentalPersona
         )
 
         logger.println("Choose a role:")
@@ -152,23 +153,22 @@ class ConsoleApp(private val configPath: String = "local.properties") {
                 print("You: ")
                 val input = reader.readLine()?.trim() ?: continue
 
-                when (input.lowercase()) {
-                    "exit" -> {
+                when {
+                    input.lowercase() == "exit" -> {
                         logger.println()
                         logger.println("👋 Goodbye!")
                         client.close()
                         break
                     }
 
-                    "clear" -> {
+                    input.lowercase() == "clear" -> {
                         conversationHistory.clear()
                         totalTokens = 0
                         logger.println("🗑️  Chat history cleared", Logger.Color.YELLOW)
                         continue
                     }
 
-                    "switch" -> {
-                        // Логика переключения ролей
+                    input.lowercase() == "switch" -> {
                         val allPersonas = listOf(
                             Personas.LiteratureTeacher,
                             Personas.SystemAnalyst,
@@ -182,6 +182,18 @@ class ConsoleApp(private val configPath: String = "local.properties") {
 
                         logger.println("🔄 Switched to: ${currentPersona.id} ", Logger.Color.YELLOW)
                         logger.println("History preserved. Context retained.", Logger.Color.GRAY)
+                        continue
+                    }
+
+                    input.lowercase().startsWith("temp ") -> {
+                        val tempValue = input.substringAfter("temp ").trim().toDoubleOrNull()
+                        if (tempValue != null && tempValue in 0.0..2.0) {
+                            currentPersona = currentPersona.copy(temperature = tempValue)
+                            logger.println("🌡️  Temperature set to: $tempValue", Logger.Color.YELLOW)
+                            logger.println("History preserved. Context retained.", Logger.Color.GRAY)
+                        } else {
+                            logger.error("Invalid temperature. Use 0.0 - 2.0")
+                        }
                         continue
                     }
 
@@ -232,6 +244,18 @@ class ConsoleApp(private val configPath: String = "local.properties") {
                                 }
 
                                 logger.println("\n────────────────────────────────────────", Logger.Color.GRAY)
+                            }
+
+                            "creative" -> {
+                                val content = jsonElement["content"]?.jsonPrimitive?.content ?: ""
+                                val reasoning = jsonElement["reasoning"]?.jsonPrimitive?.content ?: ""
+
+                                logger.println("\n✨ Creative Output:", Logger.Color.CYAN)
+                                println(content)
+
+                                if (!reasoning.isNullOrBlank()) {
+                                    logger.println("\n📌 Reasoning: $reasoning", Logger.Color.GRAY)
+                                }
                             }
 
                             else -> {

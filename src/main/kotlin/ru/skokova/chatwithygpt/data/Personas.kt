@@ -178,4 +178,28 @@ object Personas {
 
         requiresProactiveStart = false
     )
+
+    val ExperimentalPersona = Persona(
+        id = "experimental",
+        temperature = 0.7, // Дефолтная температура (можно менять через `temp` команду)
+        systemPrompt = """
+            You are a creative assistant designed for experimentation and testing.
+            Your role is to generate ideas, names, slogans, and creative content.
+            
+            RESPONSE FORMAT:
+            Output ONLY valid JSON:
+            {
+              "type": "creative",
+              "content": "Your creative output here",
+              "reasoning": "Brief explanation why this is a good idea"
+            }
+            
+            LANGUAGE: Always respond in Russian.
+            CRITICAL: Output ONLY JSON. Nothing before or after.
+        """.trimIndent(),
+
+        userMessageFormatter = { input ->
+            input
+        }
+    )
 }
