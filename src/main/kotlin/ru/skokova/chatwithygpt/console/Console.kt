@@ -7,6 +7,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import ru.skokova.chatwithygpt.client.UniversalGptClient
 import ru.skokova.chatwithygpt.client.YandexGptClient
 import ru.skokova.chatwithygpt.config.ApiConfig
 import ru.skokova.chatwithygpt.config.RoleConfig
@@ -14,7 +15,10 @@ import ru.skokova.chatwithygpt.data.KindMentor
 import ru.skokova.chatwithygpt.data.Persona
 import ru.skokova.chatwithygpt.data.Personas
 import ru.skokova.chatwithygpt.data.StrictAuditor
+import ru.skokova.chatwithygpt.models.GenerationResult
 import ru.skokova.chatwithygpt.models.Message
+import ru.skokova.chatwithygpt.models.ModelConfig
+import ru.skokova.chatwithygpt.models.ModelsRepository
 import ru.skokova.chatwithygpt.utils.Logger
 import java.io.BufferedReader
 import java.io.InputStreamReader
@@ -25,8 +29,9 @@ class ConsoleApp(private val configPath: String = "local.properties") {
 
     private val config = ApiConfig.load(configPath)
     private val roleConfig = RoleConfig.load()
+    private var currentModel: ModelConfig = ModelsRepository.YandexPro
     private val logger = Logger()
-    private lateinit var client: YandexGptClient
+    private lateinit var client: UniversalGptClient
 
     private var currentPersona: Persona = Personas.LiteratureTeacher
     private val conversationHistory = mutableListOf<Message>()
@@ -48,7 +53,7 @@ class ConsoleApp(private val configPath: String = "local.properties") {
                 logger.error("API Key and Folder ID are required!")
                 return
             }
-            client = YandexGptClient(config)
+            client = UniversalGptClient(config)
             logger.success("✓ Configuration loaded successfully")
         } catch (e: Exception) {
             logger.error("Configuration error: ${e.message}")
@@ -132,7 +137,7 @@ class ConsoleApp(private val configPath: String = "local.properties") {
         if (currentPersona.requiresProactiveStart) {
             print("Assistant: ")
             val initialRequest = listOf(Message("user", "START"))
-            val greetingResult = client.sendMessage(initialRequest, currentPersona)
+            val greetingResult = client.sendMessage(initialRequest, currentPersona, currentModel)
 
             greetingResult.onSuccess { (response, _) ->
                 val jsonElement = jsonToParse.parseToJsonElement(response).jsonObject
@@ -197,6 +202,89 @@ class ConsoleApp(private val configPath: String = "local.properties") {
                         continue
                     }
 
+                    // Команда переключения модели
+                    input.lowercase().startsWith("model ") -> {
+                        val type = input.substringAfter("model ").trim().lowercase()
+                        when (type) {
+                            "lite" -> {
+                                currentModel = ModelsRepository.YandexLite
+                                logger.println("🔄 Model switched to: ${currentModel.name}", Logger.Color.YELLOW)
+                            }
+                            "pro" -> {
+                                currentModel = ModelsRepository.YandexPro
+                                logger.println("🔄 Model switched to: ${currentModel.name}", Logger.Color.YELLOW)
+                            }
+                            "qwen" -> {
+                                currentModel = ModelsRepository.Qwen
+                                logger.println("🔄 Model switched to: ${currentModel.name}", Logger.Color.YELLOW)
+                            }
+                            else -> logger.error("Unknown model. Use: model lite, model pro, model qwen")
+                        }
+                        continue
+                    }
+
+                    // ... внутри when ...
+                    input.lowercase().startsWith("benchmark ") -> {
+                        val query = input.substringAfter("benchmark ").trim()
+                        logger.println("\n🚀 Starting Benchmark for query: \"$query\"", Logger.Color.YELLOW)
+                        logger.println("Persona: ${currentPersona.id}")
+                        logger.println("Models: ${ModelsRepository.ALL.joinToString { it.name }}\n")
+
+                        val results = mutableListOf<GenerationResult>()
+
+                        // Сообщение пользователя
+                        val testMessages = listOf(Message("user", query))
+
+                        ModelsRepository.ALL.forEach { model ->
+                            logger.println("⏳ Testing ${model.name}...", Logger.Color.CYAN)
+
+                            // 1. ИСПОЛЬЗУЕМ currentPersona
+                            val result = client.sendMessage(testMessages, currentPersona, model)
+
+                            result.onSuccess { res ->
+                                results.add(res)
+
+                                // 2. ВЫВОД ОТВЕТА
+                                logger.println("📝 Response:", Logger.Color.GRAY)
+
+                                // 3. ПАРСИНГ JSON (попытка)
+                                try {
+                                    val jsonElement = jsonToParse.parseToJsonElement(res.text).jsonObject
+
+                                    // Если это наш стандартный формат с type/text
+                                    if (jsonElement.containsKey("text")) {
+                                        println(jsonElement["text"]?.jsonPrimitive?.content)
+                                    } else if (jsonElement.containsKey("content")) {
+                                        println(jsonElement["content"]?.jsonPrimitive?.content)
+                                    } else {
+                                        // Просто красивый JSON
+                                        println(res.text)
+                                    }
+                                } catch (e: Exception) {
+                                    // Не JSON — выводим как есть
+                                    println(res.text)
+                                }
+
+                                logger.println("⏱️ ${res.durationMs}ms | 💰 %.4f rub\n".format(res.costRub), Logger.Color.GRAY)
+
+                            }.onFailure { err ->
+                                logger.error("❌ Error: ${err.message?.take(100)}...")
+                            }
+                        }
+
+                        // Таблица (без изменений)
+                        logger.println("\n📊 Benchmark Results:", Logger.Color.CYAN)
+                        println("| Model | Time (ms) | Input Tks | Output Tks | Cost (rub) |")
+                        println("|-------|-----------|-----------|------------|------------|")
+                        results.forEach { r ->
+                            val costStr = "%.4f".format(r.costRub)
+                            println("| ${r.modelName.padEnd(15)} | ${r.durationMs.toString().padEnd(9)} | ${r.inputTokens.toString().padEnd(9)} | ${r.outputTokens.toString().padEnd(10)} | $costStr |")
+                        }
+
+                        logger.println("\n💾 Copy the table above for your report.", Logger.Color.GRAY)
+                        continue
+                    }
+
                     else -> {}
                 }
 
@@ -205,7 +293,7 @@ class ConsoleApp(private val configPath: String = "local.properties") {
                 conversationHistory.add(Message("user", input))
                 print("Assistant: ")
 
-                val result = client.sendMessage(conversationHistory, currentPersona)
+                val result = client.sendMessage(conversationHistory, currentPersona, currentModel)
 
                 result.onSuccess { (response, tokens) ->
                     conversationHistory.add(Message("assistant", response))
