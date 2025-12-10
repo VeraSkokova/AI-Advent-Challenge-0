@@ -36,6 +36,7 @@ class ConsoleApp(private val configPath: String = "local.properties") {
     private var currentPersona: Persona = Personas.LiteratureTeacher
     private val conversationHistory = mutableListOf<Message>()
     private var totalTokens = 0
+    private var currentMaxTokens = 1000
 
     suspend fun run() {
         logger.banner()
@@ -137,7 +138,7 @@ class ConsoleApp(private val configPath: String = "local.properties") {
         if (currentPersona.requiresProactiveStart) {
             print("Assistant: ")
             val initialRequest = listOf(Message("user", "START"))
-            val greetingResult = client.sendMessage(initialRequest, currentPersona, currentModel)
+            val greetingResult = client.sendMessage(initialRequest, currentPersona, currentModel, currentMaxTokens)
 
             greetingResult.onSuccess { (response, _) ->
                 val jsonElement = jsonToParse.parseToJsonElement(response).jsonObject
@@ -223,7 +224,18 @@ class ConsoleApp(private val configPath: String = "local.properties") {
                         continue
                     }
 
-                    // ... внутри when ...
+                    // Команда установки лимита токенов
+                    input.lowercase().startsWith("limit ") -> {
+                        val limit = input.substringAfter("limit ").trim().toIntOrNull()
+                        if (limit != null && limit > 0) {
+                            currentMaxTokens = limit
+                            logger.println("🧱 MaxTokens limit set to: $currentMaxTokens", Logger.Color.YELLOW)
+                        } else {
+                            logger.error("Invalid limit. Usage: limit 500")
+                        }
+                        continue
+                    }
+
                     input.lowercase().startsWith("benchmark ") -> {
                         val query = input.substringAfter("benchmark ").trim()
                         logger.println("\n🚀 Starting Benchmark for query: \"$query\"", Logger.Color.YELLOW)
@@ -239,7 +251,7 @@ class ConsoleApp(private val configPath: String = "local.properties") {
                             logger.println("⏳ Testing ${model.name}...", Logger.Color.CYAN)
 
                             // 1. ИСПОЛЬЗУЕМ currentPersona
-                            val result = client.sendMessage(testMessages, currentPersona, model)
+                            val result = client.sendMessage(testMessages, currentPersona, model, currentMaxTokens)
 
                             result.onSuccess { res ->
                                 results.add(res)
@@ -285,6 +297,35 @@ class ConsoleApp(private val configPath: String = "local.properties") {
                         continue
                     }
 
+                    input.lowercase().startsWith("overflow_input") -> {
+                        // Базовый абзац (можно взять из лекции или придумать)
+                        val chunk = "Это тестовый абзац для проверки переполнения контекста. " +
+                                "Мы повторяем его много раз, чтобы создать очень длинный запрос. "
+
+                        val repeatCount = 1500  // начни, например, с 2000, потом увеличивай
+                        val hugePrompt = buildString {
+                            repeat(repeatCount) {
+                                append(chunk)
+                            }
+                        }
+
+                        logger.println("🚨 Trying input overflow with length=${hugePrompt.length} chars", Logger.Color.YELLOW)
+
+                        val messages = listOf(Message("user", hugePrompt))
+
+                        val result = client.sendMessage(messages, currentPersona, currentModel, currentMaxTokens)
+
+                        result.onSuccess { res ->
+                            logger.println("✅ Still fits. InputTokens=${res.inputTokens}, OutputTokens=${res.outputTokens}", Logger.Color.GREEN)
+                            logger.println("Model response (truncated):", Logger.Color.GRAY)
+                            println(res.text.take(500) + "...")
+                        }.onFailure { e ->
+                            logger.error("❌ Overflow error: ${e.message}")
+                        }
+
+                        continue
+                    }
+
                     else -> {}
                 }
 
@@ -293,7 +334,7 @@ class ConsoleApp(private val configPath: String = "local.properties") {
                 conversationHistory.add(Message("user", input))
                 print("Assistant: ")
 
-                val result = client.sendMessage(conversationHistory, currentPersona, currentModel)
+                val result = client.sendMessage(conversationHistory, currentPersona, currentModel, currentMaxTokens)
 
                 result.onSuccess { (response, tokens) ->
                     conversationHistory.add(Message("assistant", response))

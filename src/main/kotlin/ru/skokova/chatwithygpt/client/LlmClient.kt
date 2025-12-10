@@ -9,7 +9,8 @@ interface LlmClient {
     suspend fun sendMessage(
         messages: List<Message>,
         persona: Persona,
-        model: ModelConfig
+        model: ModelConfig,
+        maxTokens: Int = 1000
     ): Result<GenerationResult>
 
     suspend fun close()

@@ -41,7 +41,8 @@ class UniversalGptClient(
     override suspend fun sendMessage(
         messages: List<Message>,
         persona: Persona,
-        model: ModelConfig
+        model: ModelConfig,
+        maxTokens: Int
     ): Result<GenerationResult> = runCatching {
 
         val folderId = config.folderId
@@ -62,7 +63,7 @@ class UniversalGptClient(
                 putJsonObject("completionOptions") {
                     put("stream", false)
                     put("temperature", persona.temperature)
-                    put("maxTokens", "1000") // Строка!
+                    put("maxTokens", maxTokens.toString()) // Строка!
                 }
                 if (model.supportsJsonMode) {
                     put("jsonObject", true)
@@ -103,7 +104,7 @@ class UniversalGptClient(
             val requestBody = buildJsonObject {
                 put("model", modelUri)
                 put("temperature", persona.temperature)
-                put("max_tokens", 1000) // Число!
+                put("max_tokens", maxTokens) // Число!
                 putJsonArray("messages") {
                     fullHistory.forEach { msg ->
                         addJsonObject {
