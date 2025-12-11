@@ -418,7 +418,7 @@ class ConsoleApp(private val configPath: String = "local.properties") {
                         Logger.Color.GRAY
                     )
                     // Опционально, если хочешь видеть общий итог сессии
-                    logger.println("💰 Session Total: $totalTokens tks", Logger.Color.GRAY)
+                    //logger.println("💰 Session Total: $totalTokens tks", Logger.Color.GRAY)
 
                     // АВТОМАТИЧЕСКОЕ СЖАТИЕ
                     // Если история выросла больше чем на 10 сообщений (System + 9 context)
