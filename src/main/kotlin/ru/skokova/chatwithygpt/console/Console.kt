@@ -34,9 +34,14 @@ class ConsoleApp(private val configPath: String = "local.properties") {
     private lateinit var client: UniversalGptClient
 
     private var currentPersona: Persona = Personas.LiteratureTeacher
-    private val conversationHistory = mutableListOf<Message>()
+    private var conversationHistory = mutableListOf<Message>()
     private var totalTokens = 0
     private var currentMaxTokens = 1000
+
+    private val jsonToParse = Json {
+        ignoreUnknownKeys = true
+        isLenient = true
+    }
 
     suspend fun run() {
         logger.banner()
@@ -128,11 +133,6 @@ class ConsoleApp(private val configPath: String = "local.properties") {
         System.setOut(PrintStream(System.out, true, StandardCharsets.UTF_8))
         logger.println("💬 Chat (type 'exit' to quit, 'clear' to clear history, 'switch' to change role)", Logger.Color.CYAN)
         logger.println()
-
-        val jsonToParse = Json {
-            ignoreUnknownKeys = true
-            isLenient = true
-        }
 
         // --- ПРОАКТИВНЫЙ СТАРТ (если персона требует) ---
         if (currentPersona.requiresProactiveStart) {
@@ -336,7 +336,9 @@ class ConsoleApp(private val configPath: String = "local.properties") {
 
                 val result = client.sendMessage(conversationHistory, currentPersona, currentModel, currentMaxTokens)
 
-                result.onSuccess { (response, tokens) ->
+                result.onSuccess { res ->
+                    val response = res.text
+
                     conversationHistory.add(Message("assistant", response))
 
                     try {
@@ -404,8 +406,25 @@ class ConsoleApp(private val configPath: String = "local.properties") {
                         println(response)
                     }
 
-                    totalTokens += tokens
-                    logger.println("[Tokens: $tokens | Total: $totalTokens]", Logger.Color.GRAY)
+                    val inputTks = res.inputTokens
+                    val outputTks = res.outputTokens
+                    val requestTotal = inputTks + outputTks
+
+                    totalTokens += requestTotal // Обновляем глобальный счетчик
+                    val costStr = "%.4f ₽".format(res.costRub)
+
+                    logger.println(
+                        "📊 Request: ${inputTks}(in) + ${outputTks}(out) = $requestTotal tks | Cost: $costStr",
+                        Logger.Color.GRAY
+                    )
+                    // Опционально, если хочешь видеть общий итог сессии
+                    logger.println("💰 Session Total: $totalTokens tks", Logger.Color.GRAY)
+
+                    // АВТОМАТИЧЕСКОЕ СЖАТИЕ
+                    // Если история выросла больше чем на 10 сообщений (System + 9 context)
+                    if (conversationHistory.size >= 10) {
+                        compressHistory()
+                    }
 
                 }.onFailure { error ->
                     logger.error("Error: ${error.message}")
@@ -415,6 +434,66 @@ class ConsoleApp(private val configPath: String = "local.properties") {
             }
         } finally {
             reader.close()
+        }
+    }
+
+    private suspend fun compressHistory() {
+        // Настройки
+        val keepLastMessages = 2
+        // Индекс 0 - это System Prompt текущей персоны, его не трогаем
+        // Сжимаем от 1 до (size - keepLastMessages)
+
+        if (conversationHistory.size <= (keepLastMessages + 2)) return // Нечего сжимать
+
+        logger.println("\n🧹 Compressing conversation history...", Logger.Color.YELLOW)
+
+        // 1. Выделяем кусок для сжатия
+        val messagesToSummarize = conversationHistory.subList(1, conversationHistory.size - keepLastMessages)
+
+        // Превращаем сообщения в текст диалога
+        val dialogText = messagesToSummarize.joinToString("\n") { msg ->
+            "${msg.role.uppercase()}: ${msg.text}"
+        }
+
+        // 2. Отправляем запрос на сжатие (используем Lite для экономии!)
+        val summaryRequest = listOf(Message("user", "Сделай саммари этого диалога:\n$dialogText"))
+
+        // Используем Lite модель и Summarizer персону
+        val result = client.sendMessage(
+            messages = summaryRequest,
+            persona = Personas.Summarizer,
+            model = ModelsRepository.YandexLite // Всегда Lite для дешевизны
+        )
+
+        result.onSuccess { res ->
+            val rawSummary = res.text
+            val cleanSummary = try {
+                jsonToParse.parseToJsonElement(rawSummary).jsonObject["text"]?.jsonPrimitive?.content ?: rawSummary
+            } catch (e: Exception) {
+                rawSummary
+            }
+
+            // 3. Пересобираем историю
+            val newHistory = mutableListOf<Message>()
+
+            // Сохраняем исходный System Prompt
+            newHistory.add(conversationHistory.first())
+
+            // Добавляем Саммари как System сообщение (чтобы модель знала контекст)
+            newHistory.add(Message("system", "PREVIOUS CONTEXT SUMMARY: $cleanSummary"))
+
+            // Добавляем последние сообщения ("живой хвост")
+            newHistory.addAll(conversationHistory.takeLast(keepLastMessages))
+
+            // Подменяем историю
+            val oldSize = conversationHistory.size
+            conversationHistory = newHistory
+
+            logger.println("✅ History compressed: $oldSize -> ${conversationHistory.size} messages.", Logger.Color.GREEN)
+            logger.println("📉 Summary: ${cleanSummary.take(100)}...", Logger.Color.GRAY)
+
+        }.onFailure { err ->
+            logger.error("❌ Compression failed: ${err.message}")
         }
     }
 }
