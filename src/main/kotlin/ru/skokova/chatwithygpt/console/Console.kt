@@ -8,9 +8,9 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import ru.skokova.chatwithygpt.client.UniversalGptClient
-import ru.skokova.chatwithygpt.client.YandexGptClient
 import ru.skokova.chatwithygpt.config.ApiConfig
 import ru.skokova.chatwithygpt.config.RoleConfig
+import ru.skokova.chatwithygpt.data.HistoryRepository
 import ru.skokova.chatwithygpt.data.KindMentor
 import ru.skokova.chatwithygpt.data.Persona
 import ru.skokova.chatwithygpt.data.Personas
@@ -34,7 +34,7 @@ class ConsoleApp(private val configPath: String = "local.properties") {
     private lateinit var client: UniversalGptClient
 
     private var currentPersona: Persona = Personas.LiteratureTeacher
-    private var conversationHistory = mutableListOf<Message>()
+    private var conversationHistory: MutableList<Message> = HistoryRepository.load()
     private var totalTokens = 0
     private var currentMaxTokens = 1000
 
@@ -47,6 +47,21 @@ class ConsoleApp(private val configPath: String = "local.properties") {
         logger.banner()
         setupPhase()
         roleSelectionPhase()
+
+        if (conversationHistory.isEmpty()) {
+            conversationHistory.add(Message("system", currentPersona.systemPrompt))
+        } else {
+            logger.println("📜 Restored context:", Logger.Color.GRAY)
+            conversationHistory.takeLast(2).forEach { msg ->
+                // Просто выводим роль и текст.
+                // Так как мы теперь сохраняем чистый текст (см. Идею 1),
+                // здесь не нужно парсить JSON!
+                val preview = msg.text.replace("\n", " ").take(80) // Убираем переносы, берем начало
+                println("   ${msg.role.uppercase()}: $preview...")
+            }
+            logger.println("...", Logger.Color.GRAY)
+        }
+
         chatPhase()
     }
 
@@ -161,6 +176,15 @@ class ConsoleApp(private val configPath: String = "local.properties") {
 
                 when {
                     input.lowercase() == "exit" -> {
+                        logger.println("💾 Saving & Exiting...")
+
+                        // Если история длинная, сожмем перед смертью
+                        if (conversationHistory.size > 5) {
+                            compressHistory() // Сжимаем "на дорожку"
+                        }
+
+                        HistoryRepository.save(conversationHistory) // Сохраняем уже сжатое
+
                         logger.println()
                         logger.println("👋 Goodbye!")
                         client.close()
@@ -171,6 +195,8 @@ class ConsoleApp(private val configPath: String = "local.properties") {
                         conversationHistory.clear()
                         totalTokens = 0
                         logger.println("🗑️  Chat history cleared", Logger.Color.YELLOW)
+                        conversationHistory.add(Message("system", currentPersona.systemPrompt))
+                        HistoryRepository.clear() // Удаляем файл
                         continue
                     }
 
@@ -337,91 +363,33 @@ class ConsoleApp(private val configPath: String = "local.properties") {
                 val result = client.sendMessage(conversationHistory, currentPersona, currentModel, currentMaxTokens)
 
                 result.onSuccess { res ->
-                    val response = res.text
+                    val responseRaw = res.text
 
-                    conversationHistory.add(Message("assistant", response))
+                    // 1. Формируем красивый текст (И для консоли, И для истории)
+                    // Используем нашу универсальную функцию
+                    val formattedText = formatResponseForHistory(responseRaw)
 
-                    try {
-                        val jsonElement = jsonToParse.parseToJsonElement(response).jsonObject
+                    // 2. Вывод в консоль
+                    logger.println("\n🤖 Assistant:", Logger.Color.CYAN)
+                    println(formattedText)
 
-                        val type = jsonElement["type"]?.jsonPrimitive?.content
+                    // 3. Сохранение в историю (того же самого чистого текста!)
+                    conversationHistory.add(Message("assistant", formattedText))
+                    HistoryRepository.save(conversationHistory)
 
-                        when (type) {
-                            "question" -> {
-                                val text = jsonElement["text"]?.jsonPrimitive?.content ?: "..."
-                                val tip = jsonElement["tip"]?.jsonPrimitive?.content
-
-                                logger.println("\n🤖 Assistant:", Logger.Color.CYAN)
-                                println(text)
-
-                                if (!tip.isNullOrBlank()) {
-                                    logger.println("\n💡 Tip: $tip", Logger.Color.YELLOW)
-                                }
-                            }
-
-                            "stack_decision", "tdd_result", "final_spec" -> {
-                                logger.success("\n╔══════════════════════════════════════╗")
-                                logger.success("║     TECHNICAL SPECIFICATION GENERATED      ║")
-                                logger.success("╚══════════════════════════════════════╝")
-
-                                val ignoredKeys = setOf("type", "thought")
-
-                                jsonElement.entries.forEach { (key, element) ->
-                                    if (key !in ignoredKeys) {
-                                        val sectionTitle = key.replace("_", " ").uppercase()
-                                        logger.println("\n🔹 $sectionTitle", Logger.Color.CYAN)
-                                        element.printPretty(indent = "   ")
-                                    }
-                                }
-
-                                logger.println("\n────────────────────────────────────────", Logger.Color.GRAY)
-                            }
-
-                            "creative" -> {
-                                val content = jsonElement["content"]?.jsonPrimitive?.content ?: ""
-                                val reasoning = jsonElement["reasoning"]?.jsonPrimitive?.content ?: ""
-
-                                logger.println("\n✨ Creative Output:", Logger.Color.CYAN)
-                                println(content)
-
-                                if (!reasoning.isNullOrBlank()) {
-                                    logger.println("\n📌 Reasoning: $reasoning", Logger.Color.GRAY)
-                                }
-                            }
-
-                            else -> {
-                                val text = jsonElement["text"]?.jsonPrimitive?.content
-                                    ?: jsonElement["content"]?.jsonPrimitive?.content
-
-                                if (text != null) {
-                                    println(text)
-                                } else {
-                                    println(response)
-                                }
-                            }
-                        }
-
-                    } catch (_: Exception) {
-                        logger.error("Raw response (parsing failed):")
-                        println(response)
-                    }
-
+                    // 4. Статистика токенов (как было)
                     val inputTks = res.inputTokens
                     val outputTks = res.outputTokens
                     val requestTotal = inputTks + outputTks
-
-                    totalTokens += requestTotal // Обновляем глобальный счетчик
+                    totalTokens += requestTotal
                     val costStr = "%.4f ₽".format(res.costRub)
 
                     logger.println(
-                        "📊 Request: ${inputTks}(in) + ${outputTks}(out) = $requestTotal tks | Cost: $costStr",
+                        "\n📊 Request: ${inputTks}(in) + ${outputTks}(out) = $requestTotal tks | Cost: $costStr",
                         Logger.Color.GRAY
                     )
-                    // Опционально, если хочешь видеть общий итог сессии
-                    //logger.println("💰 Session Total: $totalTokens tks", Logger.Color.GRAY)
 
-                    // АВТОМАТИЧЕСКОЕ СЖАТИЕ
-                    // Если история выросла больше чем на 10 сообщений (System + 9 context)
+                    // 5. Автоматическое сжатие (как было)
                     if (conversationHistory.size >= 10) {
                         compressHistory()
                     }
@@ -468,9 +436,18 @@ class ConsoleApp(private val configPath: String = "local.properties") {
         result.onSuccess { res ->
             val rawSummary = res.text
             val cleanSummary = try {
-                jsonToParse.parseToJsonElement(rawSummary).jsonObject["text"]?.jsonPrimitive?.content ?: rawSummary
-            } catch (e: Exception) {
+                val jsonObject = jsonToParse.parseToJsonElement(rawSummary).jsonObject
+                jsonObject["text"]?.jsonPrimitive?.content
+                    ?: jsonObject["summary"]?.jsonPrimitive?.content
+                    ?: jsonObject["саммари"]?.jsonPrimitive?.content
+                    ?: rawSummary
+            } catch (_: Exception) {
                 rawSummary
+            }
+
+            if (cleanSummary.isBlank() || cleanSummary.trim() == "{}" || cleanSummary.length < 5) {
+                logger.println("⚠️ Summary generation failed (empty result). Skipping compression.", Logger.Color.YELLOW)
+                return@onSuccess // ПРЕРЫВАЕМ ОПЕРАЦИЮ, ИСТОРИЮ НЕ ТРОГАЕМ
             }
 
             // 3. Пересобираем историю
@@ -494,6 +471,63 @@ class ConsoleApp(private val configPath: String = "local.properties") {
 
         }.onFailure { err ->
             logger.error("❌ Compression failed: ${err.message}")
+        }
+    }
+
+    private fun formatResponseForHistory(response: String): String {
+        try {
+            // Очистка от Markdown
+            // Мы просто удаляем первые и последние символы, если они похожи на блок кода
+            var cleanJson = response.trim()
+
+            // Удаляем ```
+            if (cleanJson.startsWith("`") && cleanJson.contains("json")) {
+                val index = cleanJson.indexOf("{")
+                if (index != -1) cleanJson = cleanJson.substring(index)
+            }
+            // Удаляем просто ```
+            else if (cleanJson.startsWith("`")) {
+                val index = cleanJson.indexOf("{")
+                if (index != -1) cleanJson = cleanJson.substring(index)
+            }
+
+            // Удаляем хвост ```
+            val lastIndex = cleanJson.lastIndexOf("}")
+            if (lastIndex != -1) {
+                cleanJson = cleanJson.take(lastIndex + 1)
+            }
+
+            val jsonElement = jsonToParse.parseToJsonElement(cleanJson).jsonObject
+            val type = jsonElement["type"]?.jsonPrimitive?.content
+
+            return when (type) {
+                "question", "response" -> {
+                    val text = jsonElement["text"]?.jsonPrimitive?.content
+                        ?: jsonElement["content"]?.jsonPrimitive?.content
+                        ?: return response
+                    val tip = jsonElement["tip"]?.jsonPrimitive?.content
+                    if (tip != null) "$text\n\nTip: $tip" else text
+                }
+                "creative" -> {
+                    val content = jsonElement["content"]?.jsonPrimitive?.content ?: ""
+                    val reasoning = jsonElement["reasoning"]?.jsonPrimitive?.content
+                    if (reasoning != null) "$content\n\n(Reasoning: $reasoning)" else content
+                }
+                "stack_decision", "tdd_result", "final_spec" -> {
+                    val sb = StringBuilder()
+                    sb.appendLine("=== ${type.replace("_", " ").uppercase()} ===")
+                    jsonElement.entries.forEach { (key, element) ->
+                        if (key != "type" && key != "thought") {
+                            val value = if (element is JsonPrimitive) element.content else element.toString()
+                            sb.appendLine("${key.replace("_", " ")}: $value")
+                        }
+                    }
+                    sb.toString()
+                }
+                else -> response
+            }
+        } catch (_: Exception) {
+            return response
         }
     }
 }

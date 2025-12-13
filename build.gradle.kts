@@ -31,6 +31,8 @@ dependencies {
 
 application {
     mainClass.set("ru.skokova.chatwithygpt.MainKt")
+
+    applicationDefaultJvmArgs = listOf("-Dfile.encoding=UTF-8")
 }
 
 tasks.jar {
